@@ -33,6 +33,14 @@ from freqtrade.plot.plotting import generate_candlestick_graph
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy import IStrategy
 
+"""
+freqtrade_analysis_notebook helper functions
+
+Original code from @rk
+Contributions from @froggleston
+
+"""
+
 
 def setup():
     pd.options.display.width = 5000
