@@ -10,7 +10,9 @@ You will also need extra dependencies for running the notebook. If using an exis
 
 `pip install tqdm quantstats`
 
-This has not been tested in any docker environments, so YMMV.
+### Docker
+
+This has not been tested in any docker environments, so YMMV, but some instructions that might be useful are in [this issue](https://github.com/froggleston/freqtrade_analysis_notebook/issues/1)
 
 ## Installation
 
