@@ -2,6 +2,12 @@
 
 A Jupyter Notebook to make backtesting, analysis and plotting of freqtrade strategies easier
 
+## Issues
+
+The pandas 2.0 release has broken quantstats so pin your pandas install to <2.0 if you want to use the notebook for now.
+
+Awaiting this PR to merge: https://github.com/ranaroussi/quantstats/pull/263
+
 ## Prerequisites
 
 You will need to install jupyter to run this notebook. Please follow any Jupyter installation instructions for your OS or environment.
