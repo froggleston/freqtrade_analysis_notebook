@@ -14,7 +14,7 @@ You will need to install jupyter to run this notebook. Please follow any Jupyter
 
 You will also need extra dependencies for running the notebook. If using an existing freqtrade install (setup.sh script), activate the environment and:
 
-`pip install tqdm quantstats`
+`pip install tqdm quantstats ipywidgets`
 
 ### Docker
 
