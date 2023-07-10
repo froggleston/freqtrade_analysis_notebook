@@ -20,7 +20,7 @@ import pandas as pd  # noqa
 from IPython import get_ipython
 from dateutil.relativedelta import relativedelta
 from pandas import DataFrame
-import plotly.graph_objects as go
+# import plotly.graph_objects as go
 
 from freqtrade.configuration import Configuration, TimeRange, validate_config_consistency
 from freqtrade.data.btanalysis import load_backtest_data, load_trades_from_db
@@ -32,14 +32,6 @@ from freqtrade.misc import deep_merge_dicts
 from freqtrade.plot.plotting import generate_candlestick_graph
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy import IStrategy
-
-"""
-freqtrade_analysis_notebook helper functions
-
-Original code from @rk
-Contributions from @froggleston
-
-"""
 
 
 def setup():
@@ -65,6 +57,31 @@ def load_trades(config: dict, pair: str = None):
             continue
 
     return bt_trades, run_trades
+
+
+def load_candles(pairlist: list, timerange: str, data_location: str,
+                 timeframe="5m", data_format="json", candle_type=CandleType.SPOT):
+    all_candles = dict()
+
+    for pair in pairlist:
+        if timerange is not None:
+            ptr = TimeRange.parse_timerange(timerange)
+            candles = load_pair_history(datadir=data_location,
+                                        timeframe=timeframe,
+                                        timerange=ptr,
+                                        pair=pair,
+                                        data_format=data_format,
+                                        candle_type=candle_type,
+                                        )
+        else:
+            candles = load_pair_history(datadir=data_location,
+                                        timeframe=timeframe,
+                                        pair=pair,
+                                        data_format=data_format,
+                                        candle_type=candle_type,
+                                        )
+        all_candles[pair] = candles
+    return all_candles
 
 
 def load_dataframe(strategy: IStrategy, pair: str, timerange: str):
@@ -119,7 +136,7 @@ def filter_trades(trades: DataFrame, sell_reasons):
     return trades.loc[functools.reduce(lambda a, b: a | b, conditions)].copy()
 
 
-def trades_freq2quant(series: pd.DataFrame, config: dict):
+def trades_freq2quant(series: DataFrame, config: dict):
     """Convert to a format accepted by quantstats."""
 
     if len(series) > 0:
@@ -133,7 +150,7 @@ def trades_freq2quant(series: pd.DataFrame, config: dict):
 
         # Generate daily wallet value
         value = config['dry_run_wallet']
-        for d in daily_profit.iteritems():
+        for d in daily_profit.items():
             value = value + d[1]
             daily_profit.at[d[0]] = value
 
@@ -365,7 +382,11 @@ def prepare_results(test_config, results):
 
             if processed_dfs[config['strategy']][pair].shape[0] > 0:
                 processed_dfs[config['strategy']][pair].set_index('date', drop=False)
-                strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
+                # strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
+                strategy_signal_candles[config['strategy']][pair] = pd.concat(
+                    [strategy_signal_candles[config['strategy']][pair],
+                     processed_dfs[config['strategy']][pair]]
+                )
 
     # Join trade dataframes
     for config_i, info in strategy_trades.items():
@@ -446,7 +467,7 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
 
             print(tabulate(metrics, headers="keys", tablefmt='psql'))
             qs.plots.returns(info.qs_trades, bench_qs_trades, figsize=figsize)
-            qs.plots.monthly_heatmap(info.qs_trades, figsize=figsize, compounded=compounded)
+            qs.plots.monthly_heatmap(info.qs_trades, bench_qs_trades, figsize=figsize, compounded=compounded)
             qs.plots.drawdowns_periods(info.qs_trades, figsize=figsize, compounded=compounded)
             if output:
                 qs.reports.html(info.qs_trades, bench_qs_trades,
