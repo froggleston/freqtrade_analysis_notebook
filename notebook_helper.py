@@ -446,7 +446,7 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
 
             print(tabulate(metrics, headers="keys", tablefmt='psql'))
             qs.plots.returns(info.qs_trades, bench_qs_trades, figsize=figsize)
-            qs.plots.monthly_heatmap(info.qs_trades, figsize=figsize, compounded=compounded)
+            qs.plots.monthly_heatmap(info.qs_trades, figsize=figsize, compounded=compounded, benchmark=bench_info.strategy_name)
             qs.plots.drawdowns_periods(info.qs_trades, figsize=figsize, compounded=compounded)
             if output:
                 qs.reports.html(info.qs_trades, bench_qs_trades,
