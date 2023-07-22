@@ -133,9 +133,9 @@ def trades_freq2quant(series: pd.DataFrame, config: dict):
 
         # Generate daily wallet value
         value = config['dry_run_wallet']
-        for d in daily_profit.iteritems():
-            value = value + d[1]
-            daily_profit.at[d[0]] = value
+        for index, profit in daily_profit.items():
+            value += profit
+            daily_profit.at[index] = value
 
         return daily_profit.pct_change()
     else:
@@ -365,8 +365,7 @@ def prepare_results(test_config, results):
 
             if processed_dfs[config['strategy']][pair].shape[0] > 0:
                 processed_dfs[config['strategy']][pair].set_index('date', drop=False)
-                strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
-
+                strategy_signal_candles[config['strategy']][pair] = pd.concat([strategy_signal_candles[config['strategy']][pair], processed_dfs[config['strategy']][pair]], ignore_index=True)
     # Join trade dataframes
     for config_i, info in strategy_trades.items():
         info.trades = pd.concat(info.trades)
