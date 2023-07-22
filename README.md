@@ -95,3 +95,7 @@ Mouseover main plot and subplot data series to see individual values.
 
 - works but slow
 - not as fancy
+
+### "No data found. Terminating." when running backtests
+
+Usually happens if you are using a different data_format than the one downloaded.
