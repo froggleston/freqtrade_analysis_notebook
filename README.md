@@ -18,11 +18,11 @@ You will also need extra dependencies for running the notebook. If using an exis
 
 ### Docker
 
-This has not been tested in any docker environments, so YMMV, but some instructions that might be useful are in [this issue](https://github.com/froggleston/freqtrade_analysis_notebook/issues/1)
+Has been tested by @vaidab under docker. Some instructions that might be useful are in [this issue](https://github.com/froggleston/freqtrade_analysis_notebook/issues/1)
 
 ## Installation
 
-Copy both files into your base freqtrade folder, **not** the user_data/notebooks folder.
+Copy both files into your user_data/notebooks folder.
 
 ## Running
 
