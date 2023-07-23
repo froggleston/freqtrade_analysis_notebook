@@ -19,11 +19,22 @@ pip install -r /path/to/freqtrade_analysis_notebook/requirements.txt
 
 ### Docker
 
-This has not been tested in any docker environments, so YMMV, but some instructions that might be useful are in [this issue](https://github.com/froggleston/freqtrade_analysis_notebook/issues/1)
+This has been tested under docker by @vaidab .
+
+Use the instructions [here](https://www.freqtrade.io/en/stable/data-analysis/) for setting up Jupyter for freqtrade under docker. 
+
+Some instructions that might be useful are in [this issue](https://github.com/froggleston/freqtrade_analysis_notebook/issues/1)
+
 
 ## Installation
 
 Follow one of the two methods below:
+
+### Docker installation
+
+- Copy `.py` files and the `RollingBacktestNotebook.ipynb` to user_data/notebooks.
+- Set `freqtrade_dir` variable to `"/freqtrade"`
+
 
 ### Easiest installation
 
@@ -67,6 +78,10 @@ Pick any of these to open up a new Jupyter file browser tab in your preferred br
 
 If using an IDE like vscode, install an available jupyter extension and open the freqtrade folder. Then open the ipynb file and run the cells as normal.
 
+### Via Docker
+
+Connect to JupyterLab by following the instructions on the Freqtrade site.
+
 ## Usage
 
 Use the toolbar at the top of the plot to change behaviour or select/deselect data series.
@@ -95,3 +110,11 @@ Mouseover main plot and subplot data series to see individual values.
 
 - works but slow
 - not as fancy
+
+### "No data found. Terminating." when running backtests
+
+Usually happens if you are using a different data_format than the one downloaded.
+
+### "IOPub data rate exceeded." when running backtests
+
+Lower the number of pairs in your pairlist.
