@@ -7,4 +7,6 @@ ipywidgets
 joblib
 
 plotly
-bokeh
+bokeh>=3.2
+
+jupyter

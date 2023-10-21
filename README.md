@@ -12,7 +12,7 @@ You will also need extra dependencies for running the notebook. If using an exis
 
 ```
 cd /path/to/freqtrade
-source .env/bin/activate
+source .venv/bin/activate
 
 pip install -r /path/to/freqtrade_analysis_notebook/requirements.txt
 ```
@@ -87,7 +87,7 @@ Mouseover main plot and subplot data series to see individual values.
 - Click selection requires clicking on a data point and not anywhere on the plot.
 - Clicking a data series in the legend will only hide the line plot for that series and not the scatter (which is used for click selection).
 - Hover tooltips for the main plot are very difficult to get working and maintain readability, hence the summary table on the right.
-- The summary table on the right cannot be auto-sorted, so to get the indicator list for a click selection point, click the value column twice to sort descending. (After you've done this once however, the table maintains that sort order when selecting other data points). 
+- The summary table on the right cannot be auto-sorted, so to get the indicator list for a click selection point, click the value column twice to sort descending. (After you've done this once however, the table maintains that sort order when selecting other data points).
 - The signal tooltips appear overlaid on the candle tolltips, making the candle data hard to read.
 - No OHLCV data in the summary table.
 
