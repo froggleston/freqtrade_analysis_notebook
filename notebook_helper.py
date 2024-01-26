@@ -15,12 +15,14 @@ from freqtrade.optimize.backtesting import Backtesting
 from freqtrade.optimize.optimize_reports import generate_backtest_stats, generate_wins_draws_losses, show_backtest_results
 from tabulate import tabulate
 import quantstats as qs
+from tabulate import tabulate
 
 import pandas as pd  # noqa
 from IPython import get_ipython
 from dateutil.relativedelta import relativedelta
 from pandas import DataFrame
-import plotly.graph_objects as go
+import numpy as np
+# import plotly.graph_objects as go
 
 from freqtrade.configuration import Configuration, TimeRange, validate_config_consistency
 from freqtrade.data.btanalysis import load_backtest_data, load_trades_from_db
@@ -32,14 +34,6 @@ from freqtrade.misc import deep_merge_dicts
 from freqtrade.plot.plotting import generate_candlestick_graph
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy import IStrategy
-
-"""
-freqtrade_analysis_notebook helper functions
-
-Original code from @rk
-Contributions from @froggleston
-
-"""
 
 
 def setup():
@@ -65,6 +59,31 @@ def load_trades(config: dict, pair: str = None):
             continue
 
     return bt_trades, run_trades
+
+
+def load_candles(pairlist: list, timerange: str, data_location: Path,
+                 timeframe="5m", data_format="feather", candle_type=CandleType.SPOT):
+    all_candles = dict()
+
+    for pair in pairlist:
+        if timerange is not None:
+            ptr = TimeRange.parse_timerange(timerange)
+            candles = load_pair_history(datadir=data_location,
+                                        timeframe=timeframe,
+                                        timerange=ptr,
+                                        pair=pair,
+                                        data_format=data_format,
+                                        candle_type=candle_type,
+                                        )
+        else:
+            candles = load_pair_history(datadir=data_location,
+                                        timeframe=timeframe,
+                                        pair=pair,
+                                        data_format=data_format,
+                                        candle_type=candle_type,
+                                        )
+        all_candles[pair] = candles
+    return all_candles
 
 
 def load_dataframe(strategy: IStrategy, pair: str, timerange: str):
@@ -119,7 +138,7 @@ def filter_trades(trades: DataFrame, sell_reasons):
     return trades.loc[functools.reduce(lambda a, b: a | b, conditions)].copy()
 
 
-def trades_freq2quant(series: pd.DataFrame, config: dict):
+def trades_freq2quant(series: DataFrame, config: dict):
     """Convert to a format accepted by quantstats."""
 
     if len(series) > 0:
@@ -133,7 +152,7 @@ def trades_freq2quant(series: pd.DataFrame, config: dict):
 
         # Generate daily wallet value
         value = config['dry_run_wallet']
-        for d in daily_profit.iteritems():
+        for d in daily_profit.items():
             value = value + d[1]
             daily_profit.at[d[0]] = value
 
@@ -177,7 +196,7 @@ def split_timerange(timerange):
 
 # Execute backtest jobs
 def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
-    
+
     config['timerange'] = timerange
     timerange = TimeRange.parse_timerange(timerange)
     bt_date = datetime.datetime.utcfromtimestamp(timerange.startts)
@@ -188,10 +207,10 @@ def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
         with open(pairlist_file) as fp:
             deep_merge_dicts(rapidjson.load(fp, parse_mode=rapidjson.PM_COMMENTS | rapidjson.PM_TRAILING_COMMAS), config)
     config['pairs'] = config['exchange']['pair_whitelist']
-    
+
     backtesting = Backtesting(config)
     data, timerange = backtesting.load_bt_data()
-    
+
     backtesting.load_bt_data_detail()
     min_date = max_date = None
     processed_dfs = {}
@@ -217,7 +236,7 @@ def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
     return pair_count, comparison_stats, raw_trades, config, config_i, processed_dfs
 
 
-def prepare_configs(test_config, timeframe_detail=None, data_location=None, data_format="json", trading_mode=CandleType.SPOT):
+def prepare_configs(test_config, timeframe_detail=None, data_location=None, data_format="feather", trading_mode=CandleType.SPOT):
     configs = []
 
     for c in test_config:
@@ -232,7 +251,7 @@ def prepare_configs(test_config, timeframe_detail=None, data_location=None, data
         for cc in c['config']:
             if isinstance(cc, dict):
                 config_extra = deep_merge_dicts(cc, config_extra)
-        
+
         tmp_fp = None
         try:
             if config_extra:
@@ -243,13 +262,14 @@ def prepare_configs(test_config, timeframe_detail=None, data_location=None, data
 
             conf_object = Configuration({'config': config_files}, RunMode.BACKTEST)
             config = conf_object.get_config()
-            validate_config_consistency(config)
+
             if config.get('strategy'):
-                if data_location is None and 'datadir' in config_extra:
-                    config['datadir'] = Path(config_extra['datadir'])
+                if data_location is None:
+                    if 'datadir' in config_extra:
+                        config['datadir'] = Path(config_extra['datadir'])
                 else:
                     config['datadir'] = data_location
-                    
+
                 if trading_mode is None and 'trading_mode' not in config_extra:
                     config['trading_mode'] = 'spot'
                     config['candle_type_def'] = CandleType.SPOT
@@ -260,14 +280,20 @@ def prepare_configs(test_config, timeframe_detail=None, data_location=None, data
                         config['margin_mode'] = "isolated"
                         config['candle_type_def'] = trading_mode
 
-                config['dataformat_ohlcv'] = data_format
-                
+                if data_format is not None:
+                    config['dataformat_ohlcv'] = data_format
+
                 strategy = StrategyResolver.load_strategy(config)
+
                 config['timeframe'] = c.get('timeframe', strategy.timeframe)
-                
+                config['stoploss'] = c.get('stoploss', strategy.stoploss)
+
                 if timeframe_detail is not None:
                     config['timeframe_detail'] = timeframe_detail
-                
+
+                validate_config_consistency(config)
+                strategy = StrategyResolver.load_strategy(config)
+
                 strategy.dp = DataProvider(config, None)
             configs.append(config)
         finally:
@@ -277,7 +303,7 @@ def prepare_configs(test_config, timeframe_detail=None, data_location=None, data
     return configs
 
 
-def backtest_all(test_config, parallel, cpu_mult=0.66, timeframe_detail=None, data_location=None, data_format="json", trading_mode=CandleType.SPOT):
+def backtest_all(test_config, parallel, cpu_mult=0.66, timeframe_detail=None, data_location=None, data_format="feather", trading_mode=CandleType.SPOT):
     # Generate backtest jobs
     configs = prepare_configs(test_config, timeframe_detail=timeframe_detail, data_location=data_location, data_format=data_format, trading_mode=trading_mode)
     backtest_jobs = []
@@ -365,7 +391,11 @@ def prepare_results(test_config, results):
 
             if processed_dfs[config['strategy']][pair].shape[0] > 0:
                 processed_dfs[config['strategy']][pair].set_index('date', drop=False)
-                strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
+                # strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
+                strategy_signal_candles[config['strategy']][pair] = pd.concat(
+                    [strategy_signal_candles[config['strategy']][pair],
+                     processed_dfs[config['strategy']][pair]]
+                )
 
     # Join trade dataframes
     for config_i, info in strategy_trades.items():
@@ -432,10 +462,11 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
     bench_qs_trades = bench_info.qs_trades if bench_info is not None else None
     for config_i, info in strategy_trades.items():
         compounded = info.config['stake_amount'] == 'unlimited'
+
         # print(f'### {strategy} ({pair_count} pairs)')
         if len(strategy_trades) > 1 and config_i == 0:
             continue
-        
+
         if info.qs_trades.shape[0] > 0 or bench_qs_trades.shape[0] > 0:
             metrics = qs.reports.metrics(info.qs_trades, bench_qs_trades, trading_year_days=365, compounded=compounded, display=False, internal=True)
             metrics_start = metrics[:metrics.index[3]].copy()
@@ -446,9 +477,102 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
 
             print(tabulate(metrics, headers="keys", tablefmt='psql'))
             qs.plots.returns(info.qs_trades, bench_qs_trades, figsize=figsize)
-            qs.plots.monthly_heatmap(info.qs_trades, figsize=figsize, compounded=compounded)
+            qs.plots.monthly_heatmap(info.qs_trades, bench_qs_trades, figsize=figsize, compounded=compounded)
             qs.plots.drawdowns_periods(info.qs_trades, figsize=figsize, compounded=compounded)
             if output:
                 qs.reports.html(info.qs_trades, bench_qs_trades,
                                 title=f'Strategy analysis: {info.strategy_name} vs {bench_info.strategy_name}',
                                 output=output.format(strategy=info.strategy_name, benchmark=bench_info.strategy_name))
+
+
+def frogasis(df: DataFrame, filters=None):
+    no_columns = ["pair", "enter_reason", "exit_reason", "open", "close", "high", "low", "volume", "open_date", "close_date", "profit_abs"]
+
+    orig_profit = df['profit_abs'].sum()
+
+    for key, series in df.items():
+        if key not in no_columns:
+
+            if filters is not None:
+                df = df.loc[filters]
+
+            sorted_df = df.sort_values(key).dropna()
+            total_profit = sorted_df['profit_abs'].sum()
+
+            print(f"Analysing {key} ({sorted_df[key].dtype})")
+            print(f"ORIGINAL TARGET [ {orig_profit} ] [{df.shape[0]}]")
+
+            if filters is not None:
+                print(f"FILTERED TARGET [ {total_profit} ]")
+
+            prev_above_ind_val_win = 0
+            prev_above_ind_val_loss = 0
+            prev_above_num_wins = 0
+            prev_above_num_loss = 0
+            prev_above_ind_val = None
+            prev_above_profit = None
+
+            prev_below_ind_val_win = 0
+            prev_below_ind_val_loss = 0
+            prev_below_num_wins = 0
+            prev_below_num_loss = 0
+            prev_below_ind_val = None
+            prev_below_profit = None
+
+            for i, row in sorted_df.iterrows():
+                if (df[key].max() == 1 and df[key].min() == 0 and {df[key].dtype} == np.int64) or {df[key].dtype} == np.bool_:
+                    # true/false
+                    above = df.loc[(df[key] >= row[key])]
+                    below = df.loc[(df[key] <= row[key])]
+                else:
+                    above = df.loc[(df[key] > row[key])]
+                    below = df.loc[(df[key] <= row[key])]
+
+                above_wins = above.loc[(above['profit_abs'] > 0)]
+                above_loss = above.loc[(above['profit_abs'] <= 0)]
+                above_wins_sum = above_wins['profit_abs'].sum()
+                above_loss_sum = above_loss['profit_abs'].sum()
+                above_abs_profit = above_wins_sum - abs(above_loss_sum)
+                above_wins_mean = above_wins['profit_abs'].mean()
+                above_loss_mean = above_loss['profit_abs'].mean()
+
+                below_wins = below.loc[(below['profit_abs'] > 0)]
+                below_loss = below.loc[(below['profit_abs'] <= 0)]
+                below_wins_sum = below_wins['profit_abs'].sum()
+                below_loss_sum = below_loss['profit_abs'].sum()
+                below_abs_profit = below_wins_sum - abs(below_loss_sum)
+                below_wins_mean = below_wins['profit_abs'].mean()
+                below_loss_mean = below_loss['profit_abs'].mean()
+
+                if (prev_above_profit is None) or (above_abs_profit > prev_above_profit):
+                    prev_above_ind_val_win = above_wins_mean
+                    prev_above_ind_val_loss = above_loss_mean
+                    prev_above_profit = above_abs_profit
+                    prev_above_num_wins = len(above_wins)
+                    prev_above_num_loss = len(above_loss)
+                    prev_above_ind_val = row[key]
+
+                if (prev_below_profit is None) or (below_abs_profit > prev_below_profit):
+                    prev_below_ind_val_win = below_wins_mean
+                    prev_below_ind_val_loss = below_loss_mean
+                    prev_below_profit = below_abs_profit
+                    prev_below_num_wins = len(below_wins)
+                    prev_below_num_loss = len(below_loss)
+                    prev_below_ind_val = row[key]
+
+            data = {
+                "Filter": [f"{key} > {prev_above_ind_val}", f"{key} <= {prev_below_ind_val}"],
+                "# entries": [prev_above_num_wins + prev_above_num_loss, prev_below_num_wins + prev_below_num_loss],
+                "Profit (Abs)": [prev_above_profit, prev_below_profit],
+                "Win #": [prev_above_num_wins, prev_below_num_wins],
+                "Loss #": [prev_above_num_loss, prev_below_num_loss],
+                "Avg Win Profit": [prev_above_ind_val_win, prev_below_ind_val_win],
+                "Avg Loss Profit": [prev_above_ind_val_loss, prev_below_ind_val_loss],
+            }
+
+            print(tabulate(
+                data,
+                headers='keys',
+                tablefmt='psql',
+                showindex=False
+            ))

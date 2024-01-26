@@ -1,0 +1,12 @@
+tabulate
+pandas>=2.0
+python-rapidjson
+tqdm
+quantstats>=0.0.60
+ipywidgets
+joblib
+
+plotly
+bokeh>=3.2
+
+jupyter
