@@ -5,8 +5,7 @@ tqdm
 quantstats>=0.0.60
 ipywidgets
 joblib
-
+prompt_toolkit<=3.0.36,>=2.0
 plotly
 bokeh>=3.2
-
 jupyter
