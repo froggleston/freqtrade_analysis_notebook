@@ -181,7 +181,13 @@ def split_timerange(timerange):
                 next_month = start.replace(month=start.month+1, day=1)
             if next_month > end:
                 break
-            result.append(start.strftime("%Y%m%d")+'-'+last_day_of_month(start).strftime("%Y%m%d"))
+            result.append(
+                start.strftime("%Y%m%d") + \
+                '-' + \
+                (
+                    last_day_of_month(start) + datetime.timedelta(days=1)
+                ).strftime("%Y%m%d")
+            )
             start = next_month
 
         if start != end:
