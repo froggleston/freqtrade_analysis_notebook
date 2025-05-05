@@ -1,37 +1,34 @@
-import functools
-import tempfile
-from contextlib import suppress
 import datetime
+import functools
+import json
+import multiprocessing
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import suppress
 from pathlib import Path
 
-import multiprocessing
-
-import rapidjson
-from tqdm.notebook import tqdm
-import json
-from freqtrade.configuration import TimeRange
-from freqtrade.misc import deep_merge_dicts
-from freqtrade.optimize.backtesting import Backtesting
-from freqtrade.optimize.optimize_reports import generate_backtest_stats, generate_wins_draws_losses, show_backtest_results
-from tabulate import tabulate
-import quantstats as qs
-from tabulate import tabulate
-
-import pandas as pd  # noqa
-from IPython import get_ipython
-from dateutil.relativedelta import relativedelta
-from pandas import DataFrame
 import numpy as np
-# import plotly.graph_objects as go
+import pandas as pd  # noqa
+import quantstats as qs
+import rapidjson
+from itables import show
+from pandas import DataFrame
+from tabulate import tabulate
+from tqdm.notebook import tqdm
 
+# import plotly.graph_objects as go
 from freqtrade.configuration import Configuration, TimeRange, validate_config_consistency
 from freqtrade.data.btanalysis import load_backtest_data, load_trades_from_db
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.data.history import load_pair_history
-from freqtrade.enums import RunMode, CandleType
-from freqtrade.exchange import timeframe_to_minutes
+from freqtrade.enums import CandleType, RunMode
 from freqtrade.misc import deep_merge_dicts
-from freqtrade.plot.plotting import generate_candlestick_graph
+from freqtrade.optimize.backtesting import Backtesting
+from freqtrade.optimize.optimize_reports import (
+    generate_backtest_stats,
+    generate_wins_draws_losses,
+    show_backtest_results,
+)
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy import IStrategy
 
@@ -158,7 +155,7 @@ def trades_freq2quant(series: DataFrame, config: dict):
 
         return daily_profit.pct_change()
     else:
-        return 0
+        return None
 
 
 def split_timerange(timerange):
@@ -183,11 +180,11 @@ def split_timerange(timerange):
                 break
             result.append(
                 start.strftime("%Y%m%d") + \
-                '-' + \
-                (
-                    last_day_of_month(start) + datetime.timedelta(days=1)
-                ).strftime("%Y%m%d")
-            )
+                    '-' + \
+                    (
+                        last_day_of_month(start) + datetime.timedelta(days=1)
+                    ).strftime("%Y%m%d")
+                )
             start = next_month
 
         if start != end:
@@ -200,8 +197,26 @@ def split_timerange(timerange):
 
     return ml
 
+
+# def shuffle(data: Dict[str, DataFrame], seed: int=None):
+#     for pair, df in data.items():
+#         df['date'] = df['date'].sample(frac=1, ignore_index=True, random_state=seed)
+#         df.sort_values('date', inplace=True)
+#         df.reset_index(drop=True, inplace=True)
+
+#         df['open'] = df['close'].shift(1)
+
+#         diff = df['close'] - df['open'].shift(1)
+
+#         # df['close'] = df['close'].shift() + diff
+#         df['high'] = df['high'].shift() + diff
+#         df['low'] = df['low'].shift() + diff
+#         # df['open'] = df['open'].shift() + diff
+#     return data
+
+
 # Execute backtest jobs
-def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
+def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange, shuffle_data=False, shuffle_seed=None):
 
     config['timerange'] = timerange
     timerange = TimeRange.parse_timerange(timerange)
@@ -217,18 +232,23 @@ def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
     backtesting = Backtesting(config)
     data, timerange = backtesting.load_bt_data()
 
-    backtesting.load_bt_data_detail()
+    backtesting._load_bt_data_detail()
     min_date = max_date = None
     processed_dfs = {}
+    exited_dfs = {}
+
+    # if shuffle_data:
+    #     data = shuffle(data, seed=shuffle_seed)
 
     for strat in backtesting.strategylist:
         min_date, max_date = backtesting.backtest_one_strategy(strat, data, timerange)
-        processed_dfs[strat.get_strategy_name()] = backtesting.processed_dfs[strat.get_strategy_name()]
+        processed_dfs[strat.get_strategy_name()] = backtesting.analysis_results["signals"][strat.get_strategy_name()]
+        exited_dfs[strat.get_strategy_name()] = backtesting.analysis_results["exited"][strat.get_strategy_name()]
 
     comparison_stats = []
     raw_trades = {}
     if len(backtesting.strategylist) > 0:
-        stats = generate_backtest_stats(data, backtesting.all_results, min_date=min_date, max_date=max_date)
+        stats = generate_backtest_stats(data, backtesting.all_bt_content, min_date=min_date, max_date=max_date)
         show_backtest_results(config, stats)
 
         comparison_stats = stats['strategy_comparison']
@@ -237,9 +257,9 @@ def backtest_one(config, config_i, pairlist_fmt, pair_count, timerange):
             r['date'] = f'{bt_date.year}-{bt_date.month:02d}-{bt_date.day:02d}'
             r['pair_count'] = pair_count
             r['wdl'] = generate_wins_draws_losses(r['wins'], r['draws'], r['losses'])
-            trades_df = backtesting.all_results[r['key']]['results']
+            trades_df = backtesting.all_bt_content[r['key']]['results']
             raw_trades[r['key']] = trades_df
-    return pair_count, comparison_stats, raw_trades, config, config_i, processed_dfs
+    return pair_count, comparison_stats, raw_trades, config, config_i, processed_dfs, exited_dfs
 
 
 def prepare_configs(test_config, timeframe_detail=None, data_location=None, data_format="feather", trading_mode=CandleType.SPOT):
@@ -309,7 +329,7 @@ def prepare_configs(test_config, timeframe_detail=None, data_location=None, data
     return configs
 
 
-def backtest_all(test_config, parallel, cpu_mult=0.66, timeframe_detail=None, data_location=None, data_format="feather", trading_mode=CandleType.SPOT):
+def backtest_all(test_config, parallel, cpu_mult=0.66, timeframe_detail=None, data_location=None, data_format="feather", trading_mode=CandleType.SPOT, shuffle_data=False, shuffle_seed=None):
     # Generate backtest jobs
     configs = prepare_configs(test_config, timeframe_detail=timeframe_detail, data_location=data_location, data_format=data_format, trading_mode=trading_mode)
     backtest_jobs = []
@@ -317,7 +337,7 @@ def backtest_all(test_config, parallel, cpu_mult=0.66, timeframe_detail=None, da
     for i, c in enumerate(test_config):
         for pair_count in c['pair_count']:
             for timerange in c['timeranges']:
-                backtest_jobs.append((configs[i], i, c.get('pairlist'), pair_count, timerange))
+                backtest_jobs.append((configs[i], i, c.get('pairlist'), pair_count, timerange, shuffle_data, shuffle_seed))
 
     if parallel:
         i = 0
@@ -358,14 +378,16 @@ class ComparisonInfo:
 def prepare_results(test_config, results):
     strategy_comparison = {}
     strategy_trades = {}
-    strategy_signal_candles = {}
+    strategy_entry_signal_candles = {}
+    strategy_exit_signal_candles = {}
 
     for i in test_config:
         if "strategy" in i:
-            strategy_signal_candles[i['strategy']] = {}
+            strategy_entry_signal_candles[i['strategy']] = {}
+            strategy_exit_signal_candles[i['strategy']] = {}
 
     for r in results:
-        pair_count, comparison_stats, raw_trades, config, config_i, processed_dfs = r
+        pair_count, comparison_stats, raw_trades, config, config_i, processed_dfs, exit_dfs = r
 
         # Per-paircount comparison of different strategies
         try:
@@ -392,15 +414,22 @@ def prepare_results(test_config, results):
 
         # print(processed_dfs[config['strategy']])
         for pair in processed_dfs[config['strategy']].keys():
-            if pair not in strategy_signal_candles[config['strategy']]:
-                strategy_signal_candles[config['strategy']][pair] = DataFrame()
+            if pair not in strategy_entry_signal_candles[config['strategy']]:
+                strategy_entry_signal_candles[config['strategy']][pair] = DataFrame()
+                strategy_exit_signal_candles[config['strategy']][pair] = DataFrame()
 
-            if processed_dfs[config['strategy']][pair].shape[0] > 0:
+            if exit_dfs[config['strategy']][pair].shape[0] > 0:
                 processed_dfs[config['strategy']][pair].set_index('date', drop=False)
-                # strategy_signal_candles[config['strategy']][pair] = strategy_signal_candles[config['strategy']][pair].append(processed_dfs[config['strategy']][pair], ignore_index=True)
-                strategy_signal_candles[config['strategy']][pair] = pd.concat(
-                    [strategy_signal_candles[config['strategy']][pair],
+                exit_dfs[config['strategy']][pair].set_index('date', drop=False)
+
+                strategy_entry_signal_candles[config['strategy']][pair] = pd.concat(
+                    [strategy_entry_signal_candles[config['strategy']][pair],
                      processed_dfs[config['strategy']][pair]]
+                )
+
+                strategy_exit_signal_candles[config['strategy']][pair] = pd.concat(
+                    [strategy_exit_signal_candles[config['strategy']][pair],
+                     exit_dfs[config['strategy']][pair]]
                 )
 
     # Join trade dataframes
@@ -411,15 +440,15 @@ def prepare_results(test_config, results):
     # TODO: Save merge results of multiple backtests and save them
     # stats = generate_backtest_stats(data, self.all_results, min_date=min_date, max_date=max_date)
     # store_backtest_stats(self.config['exportfilename'], stats)
-    return strategy_comparison, strategy_trades, strategy_signal_candles
+    return strategy_comparison, strategy_trades, strategy_entry_signal_candles, strategy_exit_signal_candles
 
 
 def extend_metrics(config: dict, metrics: DataFrame, trades: DataFrame, column):
     profit_abs = trades['profit_abs'].sum()
     final_balance = config['dry_run_wallet'] + profit_abs
     gain_on_acc = ((final_balance / config['dry_run_wallet']) - 1) * 100
-    metrics.loc[('GOA', column)] = '{:.2f}%'.format(gain_on_acc)
-    metrics.loc[('Final Balance', column)] = '{:.2f}'.format(profit_abs)
+    metrics.loc[('GOA', column)] = f'{gain_on_acc:.2f}%'
+    metrics.loc[('Final Balance', column)] = f'{profit_abs:.2f}'
     return metrics
 
 
@@ -473,7 +502,7 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
         if len(strategy_trades) > 1 and config_i == 0:
             continue
 
-        if info.qs_trades.shape[0] > 0 or bench_qs_trades.shape[0] > 0:
+        if info.qs_trades is not None and (info.qs_trades.shape[0] > 0 or bench_qs_trades.shape[0] > 0):
             metrics = qs.reports.metrics(info.qs_trades, bench_qs_trades, trading_year_days=365, compounded=compounded, display=False, internal=True)
             metrics_start = metrics[:metrics.index[3]].copy()
             if len(strategy_trades) > 1:
@@ -489,96 +518,260 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
                 qs.reports.html(info.qs_trades, bench_qs_trades,
                                 title=f'Strategy analysis: {info.strategy_name} vs {bench_info.strategy_name}',
                                 output=output.format(strategy=info.strategy_name, benchmark=bench_info.strategy_name))
+        else:
+            print(f"No trades for {info.strategy_name}")
 
-
-def frogasis(df: DataFrame, filters=None):
+def frogasis(df: DataFrame, filters=None, combined_sort=False, sort_by=["profit_abs"], max_workers=4):
     no_columns = ["pair", "enter_reason", "exit_reason", "open", "close", "high", "low", "volume", "open_date", "close_date", "profit_abs"]
 
     orig_profit = df['profit_abs'].sum()
 
-    for key, series in df.items():
-        if key not in no_columns:
+    if combined_sort:
+        columns = ["filter",
+                   "#_entries",
+                   "profit_abs",
+                   "avg_profit",
+                   "win_#",
+                   "loss_#",
+                   "avg_win_profit",
+                   "avg_loss_profit",
+                   "exp",
+                   "exp_ratio",
+        ]
 
-            if filters is not None:
-                df = df.loc[filters]
+        print(f"ORIGINAL TARGET [ {orig_profit} ] [{df.shape[0]}]")
+        if filters is not None:
+            df = df.loc[filters]
+            total_profit = df['profit_abs'].sum()
+            print(f"FILTERED TARGET [ {total_profit} ] [{df.shape[0]}]")
 
-            sorted_df = df.sort_values(key).dropna()
-            total_profit = sorted_df['profit_abs'].sum()
+        outdf = parallel_process(df, no_columns, columns, sort_by, max_workers=max_workers)
+        return outdf
+    else:
+        for key, series in df.items():
+            if key not in no_columns:
 
-            print(f"Analysing {key} ({sorted_df[key].dtype})")
-            print(f"ORIGINAL TARGET [ {orig_profit} ] [{df.shape[0]}]")
+                if filters is not None:
+                    df = df.loc[filters]
 
-            if filters is not None:
-                print(f"FILTERED TARGET [ {total_profit} ]")
+                sorted_df = df.sort_values(key).dropna()
+                total_profit = sorted_df['profit_abs'].sum()
 
-            prev_above_ind_val_win = 0
-            prev_above_ind_val_loss = 0
-            prev_above_num_wins = 0
-            prev_above_num_loss = 0
-            prev_above_ind_val = None
-            prev_above_profit = None
+                print(f"Analysing {key} ({sorted_df[key].dtype})")
+                print(f"ORIGINAL TARGET [ {orig_profit} ] [{df.shape[0]}]")
 
-            prev_below_ind_val_win = 0
-            prev_below_ind_val_loss = 0
-            prev_below_num_wins = 0
-            prev_below_num_loss = 0
-            prev_below_ind_val = None
-            prev_below_profit = None
+                if filters is not None:
+                    print(f"FILTERED TARGET [ {total_profit} ]")
 
-            for i, row in sorted_df.iterrows():
-                if (df[key].max() == 1 and df[key].min() == 0 and {df[key].dtype} == np.int64) or {df[key].dtype} == np.bool_:
-                    # true/false
-                    above = df.loc[(df[key] >= row[key])]
-                    below = df.loc[(df[key] <= row[key])]
-                else:
-                    above = df.loc[(df[key] > row[key])]
-                    below = df.loc[(df[key] <= row[key])]
+                prev_above_ind_val_win = 0
+                prev_above_ind_val_loss = 0
+                prev_above_num_wins = 0
+                prev_above_num_loss = 0
+                prev_above_ind_val = None
+                prev_above_profit = None
 
-                above_wins = above.loc[(above['profit_abs'] > 0)]
-                above_loss = above.loc[(above['profit_abs'] <= 0)]
-                above_wins_sum = above_wins['profit_abs'].sum()
-                above_loss_sum = above_loss['profit_abs'].sum()
-                above_abs_profit = above_wins_sum - abs(above_loss_sum)
-                above_wins_mean = above_wins['profit_abs'].mean()
-                above_loss_mean = above_loss['profit_abs'].mean()
+                prev_below_ind_val_win = 0
+                prev_below_ind_val_loss = 0
+                prev_below_num_wins = 0
+                prev_below_num_loss = 0
+                prev_below_ind_val = None
+                prev_below_profit = None
 
-                below_wins = below.loc[(below['profit_abs'] > 0)]
-                below_loss = below.loc[(below['profit_abs'] <= 0)]
-                below_wins_sum = below_wins['profit_abs'].sum()
-                below_loss_sum = below_loss['profit_abs'].sum()
-                below_abs_profit = below_wins_sum - abs(below_loss_sum)
-                below_wins_mean = below_wins['profit_abs'].mean()
-                below_loss_mean = below_loss['profit_abs'].mean()
+                for i, row in sorted_df.iterrows():
+                    if (df[key].max() == 1 and df[key].min() == 0 and {df[key].dtype} == np.int64) or {df[key].dtype} == np.bool_:
+                        # true/false
+                        above = df.loc[(df[key] >= row[key])]
+                        below = df.loc[(df[key] <= row[key])]
+                    else:
+                        above = df.loc[(df[key] > row[key])]
+                        below = df.loc[(df[key] <= row[key])]
 
-                if (prev_above_profit is None) or (above_abs_profit > prev_above_profit):
-                    prev_above_ind_val_win = above_wins_mean
-                    prev_above_ind_val_loss = above_loss_mean
-                    prev_above_profit = above_abs_profit
-                    prev_above_num_wins = len(above_wins)
-                    prev_above_num_loss = len(above_loss)
-                    prev_above_ind_val = row[key]
+                    above_wins = above.loc[(above['profit_abs'] > 0)]
+                    above_loss = above.loc[(above['profit_abs'] <= 0)]
+                    above_wins_sum = above_wins['profit_abs'].sum()
+                    above_loss_sum = above_loss['profit_abs'].sum()
+                    above_abs_profit = above_wins_sum - abs(above_loss_sum)
+                    above_wins_mean = above_wins['profit_abs'].mean()
+                    above_loss_mean = above_loss['profit_abs'].mean()
 
-                if (prev_below_profit is None) or (below_abs_profit > prev_below_profit):
-                    prev_below_ind_val_win = below_wins_mean
-                    prev_below_ind_val_loss = below_loss_mean
-                    prev_below_profit = below_abs_profit
-                    prev_below_num_wins = len(below_wins)
-                    prev_below_num_loss = len(below_loss)
-                    prev_below_ind_val = row[key]
+                    below_wins = below.loc[(below['profit_abs'] > 0)]
+                    below_loss = below.loc[(below['profit_abs'] <= 0)]
+                    below_wins_sum = below_wins['profit_abs'].sum()
+                    below_loss_sum = below_loss['profit_abs'].sum()
+                    below_abs_profit = below_wins_sum - abs(below_loss_sum)
+                    below_wins_mean = below_wins['profit_abs'].mean()
+                    below_loss_mean = below_loss['profit_abs'].mean()
 
-            data = {
-                "Filter": [f"{key} > {prev_above_ind_val}", f"{key} <= {prev_below_ind_val}"],
-                "# entries": [prev_above_num_wins + prev_above_num_loss, prev_below_num_wins + prev_below_num_loss],
-                "Profit (Abs)": [prev_above_profit, prev_below_profit],
-                "Win #": [prev_above_num_wins, prev_below_num_wins],
-                "Loss #": [prev_above_num_loss, prev_below_num_loss],
-                "Avg Win Profit": [prev_above_ind_val_win, prev_below_ind_val_win],
-                "Avg Loss Profit": [prev_above_ind_val_loss, prev_below_ind_val_loss],
-            }
+                    if (prev_above_profit is None) or (above_abs_profit > prev_above_profit):
+                        prev_above_ind_val_win = above_wins_mean
+                        prev_above_ind_val_loss = above_loss_mean
+                        prev_above_profit = above_abs_profit
+                        prev_above_num_wins = len(above_wins)
+                        prev_above_num_loss = len(above_loss)
+                        prev_above_ind_val = row[key]
 
-            print(tabulate(
-                data,
-                headers='keys',
-                tablefmt='psql',
-                showindex=False
-            ))
+                    if (prev_below_profit is None) or (below_abs_profit > prev_below_profit):
+                        prev_below_ind_val_win = below_wins_mean
+                        prev_below_ind_val_loss = below_loss_mean
+                        prev_below_profit = below_abs_profit
+                        prev_below_num_wins = len(below_wins)
+                        prev_below_num_loss = len(below_loss)
+                        prev_below_ind_val = row[key]
+
+                data = {
+                    "Filter": [f"{key} > {prev_above_ind_val}", f"{key} <= {prev_below_ind_val}"],
+                    "# entries": [prev_above_num_wins + prev_above_num_loss, prev_below_num_wins + prev_below_num_loss],
+                    "Profit (Abs)": [prev_above_profit, prev_below_profit],
+                    "Win #": [prev_above_num_wins, prev_below_num_wins],
+                    "Loss #": [prev_above_num_loss, prev_below_num_loss],
+                    "Avg Win Profit": [prev_above_ind_val_win, prev_below_ind_val_win],
+                    "Avg Loss Profit": [prev_above_ind_val_loss, prev_below_ind_val_loss],
+                }
+
+        return data
+
+def tabulate_df(df: DataFrame, columns=None, tablefmt='psql', showindex=False, itable=False):
+    if columns is None:
+        columns = df.columns
+
+    if itable:
+        show(
+            df,
+            paging=False,
+            style="table-layout:auto; width:50%; float:left"
+        )
+    else:
+        print(tabulate(
+            df,
+            headers='keys',
+            tablefmt=tablefmt,
+            showindex=showindex
+        ))
+
+# def process_column(key, df, no_columns):
+def process_column(args):
+    key, df, no_columns = args
+    if key in no_columns:
+        return []
+
+    sorted_df = df.sort_values(key).dropna()
+    prev_above_ind_val_win = 0
+    prev_above_ind_val_loss = 0
+    prev_above_num_wins = 0
+    prev_above_num_loss = 0
+    prev_above_ind_val = None
+    prev_above_profit = None
+
+    prev_below_ind_val_win = 0
+    prev_below_ind_val_loss = 0
+    prev_below_num_wins = 0
+    prev_below_num_loss = 0
+    prev_below_ind_val = None
+    prev_below_profit = None
+
+    prev_above_expectancy = 0.0
+    prev_below_expectancy = 0.0
+    prev_above_expectancy_ratio = 100.0
+    prev_below_expectancy_ratio = 100.0
+
+    for i, row in sorted_df.iterrows():
+        if (df[key].max() == 1 and df[key].min() == 0 and df[key].dtype == np.int64) or df[key].dtype == np.bool_:
+            above = df.loc[(df[key] >= row[key])]
+            below = df.loc[(df[key] <= row[key])]
+        else:
+            above = df.loc[(df[key] > row[key])]
+            below = df.loc[(df[key] <= row[key])]
+
+        above_winrate = 0
+        above_loserate = 0
+        below_winrate = 0
+        below_loserate = 0
+        above_expectancy = 0.0
+        below_expectancy = 0.0
+        above_expectancy_ratio = 100.0
+        below_expectancy_ratio = 100.0
+
+        above_wins = above.loc[above['profit_abs'] > 0]
+        num_above_wins = len(above_wins)
+        above_loss = above.loc[above['profit_abs'] <= 0]
+        num_above_loss = len(above_loss)
+        above_num_trades = num_above_wins + num_above_loss
+        above_wins_sum = above_wins['profit_abs'].sum()
+        above_loss_sum = above_loss['profit_abs'].sum()
+        above_abs_profit = above_wins_sum - abs(above_loss_sum)
+        above_wins_mean = above_wins['profit_abs'].mean()
+        above_loss_mean = above_loss['profit_abs'].mean()
+
+        below_wins = below.loc[below['profit_abs'] > 0]
+        num_below_wins = len(below_wins)
+        below_loss = below.loc[below['profit_abs'] <= 0]
+        num_below_loss = len(below_loss)
+        below_num_trades = num_below_wins + num_below_loss
+        below_wins_sum = below_wins['profit_abs'].sum()
+        below_loss_sum = below_loss['profit_abs'].sum()
+        below_abs_profit = below_wins_sum - abs(below_loss_sum)
+        below_wins_mean = below_wins['profit_abs'].mean()
+        below_loss_mean = below_loss['profit_abs'].mean()
+
+        if above_num_trades > 0:
+            above_winrate = num_above_wins / above_num_trades
+            above_loserate = num_above_loss / above_num_trades
+            above_expectancy = (above_winrate * above_wins_mean) - (above_loserate * abs(above_loss_mean))
+            if abs(above_loss_mean) > 0:
+                above_risk_reward_ratio = above_wins_mean / abs(above_loss_mean)
+                above_expectancy_ratio = ((1 + above_risk_reward_ratio) * above_winrate) - 1
+
+        if (prev_above_profit is None) or ((above_abs_profit > prev_above_profit) and (above_expectancy_ratio > prev_above_expectancy_ratio)):
+            prev_above_ind_val_win = above_wins_mean
+            prev_above_ind_val_loss = above_loss_mean
+            prev_above_profit = above_abs_profit
+            prev_above_num_wins = num_above_wins
+            prev_above_num_loss = num_above_loss
+            prev_above_ind_val = row[key]
+            prev_above_expectancy = above_expectancy
+            prev_above_expectancy_ratio = above_expectancy_ratio
+
+        if below_num_trades > 0:
+            below_winrate = num_below_wins / below_num_trades
+            below_loserate = num_below_loss / below_num_trades
+            below_expectancy = (below_winrate * below_wins_mean) - (below_loserate * abs(below_loss_mean))
+            if abs(below_loss_mean) > 0:
+                below_risk_reward_ratio = below_wins_mean / abs(below_loss_mean)
+                below_expectancy_ratio = ((1 + below_risk_reward_ratio) * below_winrate) - 1
+
+        if (prev_below_profit is None) or ((below_abs_profit > prev_below_profit) and (below_expectancy_ratio > prev_below_expectancy_ratio)):
+            prev_below_ind_val_win = below_wins_mean
+            prev_below_ind_val_loss = below_loss_mean
+            prev_below_profit = below_abs_profit
+            prev_below_num_wins = num_below_wins
+            prev_below_num_loss = num_below_loss
+            prev_below_ind_val = row[key]
+            prev_below_expectancy = below_expectancy
+            prev_below_expectancy_ratio = below_expectancy_ratio
+
+    return [
+        [f"{key} > {prev_above_ind_val}", prev_above_num_wins + prev_above_num_loss, prev_above_profit,
+         prev_above_profit / (prev_above_num_wins + prev_above_num_loss), prev_above_num_wins, prev_above_num_loss,
+         prev_above_ind_val_win, prev_above_ind_val_loss, prev_above_expectancy, prev_above_expectancy_ratio],
+        [f"{key} <= {prev_below_ind_val}", prev_below_num_wins + prev_below_num_loss, prev_below_profit,
+         prev_below_profit / (prev_below_num_wins + prev_below_num_loss), prev_below_num_wins, prev_below_num_loss,
+         prev_below_ind_val_win, prev_below_ind_val_loss, prev_below_expectancy, prev_below_expectancy_ratio]
+    ]
+
+def parallel_process(df, no_columns, columns, sort_by, max_workers=4):
+    all_rows = []
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(process_column, [(key, df, no_columns) for key in df.columns])
+
+    for result in results:
+        all_rows.extend(result)
+
+    outdf = pd.DataFrame(all_rows, columns=columns)
+    outdf.sort_values(by=sort_by, inplace=True, ascending=False)
+    return outdf
+
+def mae_mfe(df: DataFrame):
+    df['mfe'] = (df['max_rate'] - df['open_rate']) / df['open_rate']
+    df['mae'] = (df['min_rate'] - df['open_rate']) / df['open_rate']
+    return df
