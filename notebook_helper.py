@@ -458,7 +458,6 @@ def print_quant_stats(test_config, strategy_comparison, strategy_trades, table=T
         ("date", "Date", "{:s}"),
         ("key", "Strategy", "{:s}"),
         ("profit_mean_pct", "Profit Avg", "{:.2f}"),
-        ("profit_sum_pct", "Profit Cum", "{:.1f}"),
         ("profit_total_pct", "Profit %", "{:.1f}"),
         ("profit_total_abs", "Profit Abs", "{:.0f}"),
         ("duration_avg", "Dur Avg", "{:s}"),
